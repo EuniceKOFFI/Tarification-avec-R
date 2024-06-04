@@ -1,0 +1,1097 @@
+---
+title: "Projet Tarification"
+author: "Eunice KOFFI, Léa TENAILLE, Sangeerthan KUNASEELAN, Micelle-Ange SOH"
+date: "2024-05-02"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Installation des packages
+
+```{r, eval=FALSE, echo=FALSE, results='hide'}
+packages <- c("xts", "sp", "zoo", "Hmisc", "plyr", "dplyr", "tidyr", "corrplot","ggplot2", "lubridate", "car", "MASS", "pscl", "glmnet",
+"caret", "data.table", "stringr", "skimr", "dunn.test", "DT", "rlang", "tibble")
+
+# Fonction pour installer les packages s'ils ne sont pas déjà installés
+install_if_missing <- function(package) {
+  if (!require(package, character.only = TRUE)) {
+    install.packages(package, repos = "http://cran.rstudio.com/")
+    library(package, character.only = TRUE)
+  }
+}
+
+# Appliquer la fonction à chaque package requis
+sapply(packages, install_if_missing)
+
+# Installer spécifiquement le package CASdatasets depuis une source spécifique si nécessaire
+if (!require("CASdatasets", character.only = TRUE)) {
+  install.packages("CASdatasets", repos = "http://dutangc.perso.math.cnrs.fr/RRepository/pub/", type = "source")
+}
+
+library(CASdatasets)
+```
+
+# Chargement de la base de données 
+```{r}
+# Charger les données
+data("freMTPLfreq", package = "CASdatasets")
+data("freMTPLsev" , package = "CASdatasets")
+```
+
+# Partie I : Exploration des données
+## I.1 : Statistiques descriptives
+
+```{r}
+skim(freMTPLfreq)
+```
+La table FreqMTPLfreq contient 413169 lignes et 10 colonnes. 
+Elle contient 5 variables numériques (ClaimNb, Exposure, CarAge, DriverAge et Density) et 5 variables catégorielles (PolicyID, Power, Brand, Gas et Region). 
+
+Nous avons:
+- 12 puissances différentes. La plus fréquente est la puissance f qui représente 23.17 %
+- 7 groupes de marques de véhicules. La plus fréquente est le groupe de marque française Renault, Nissan or Citroen qui représente environ 53 %. 
+- 2 type de carburant avec des proportions presque égales. 
+- Des assurés dans 10 différentes régions. Celle qui couvre la majorité est la région centre. 
+
+Concernant les variables numériques, nous constatons que :
+- Plus de 75 % des polices n'ont pas enregistrés de sinistres. Cependant, nous avons des polices avec 4 sinistres enregistrés sur la période considérée. - Nous avons une exposition maximale de 1,99. Cela doit correspondre à une erreur car on raisonne généralement en exercice qui correspond à 1 an. Nous devons traiter ces variables en ramenant l'exposition à 1 ou 0.99. 
+- Les voitures assurées sont généralement des voitures assez récentes. Cependant, nous remarquons la présence de voiture très vielles jusqu'à 100 ans. Ces voitures peuvent correspondre à des voitures de collections ou à des erreurs de frappe. 
+- Les assurés assez bien répartis sur l'intervalle [18; 100]
+- Les régions couvertes sont assez hétérogènes en terme de densité de population. Nous avons des régions très peuplées et des régions quasiment désertes.
+
+Par ailleurs, notons qu'il n'ya pas de valeurs manquantes dans toute la base de données. 
+
+```{r}
+cat("\n\nPourcentages des modalités de Power dans la base:\n")
+prop.table(table(freMTPLfreq$Power)) * 100
+
+cat("\n\nPourcentages des modalités de Brand dans la base:\n")
+prop.table(table(freMTPLfreq$Brand)) * 100
+
+cat("\n\nPourcentages des modalités de Gas dans la base:\n")
+prop.table(table(freMTPLfreq$Gas)) * 100
+
+cat("\n\nPourcentages des modalités de Region dans la base:\n")
+prop.table(table(freMTPLfreq$Region)) * 100
+
+```
+Nous constatons que plusieurs modalités sont considérées de rares car elles ont de faibles proportions dans la base de données. Dans la suite, il conviendra de procéder à un regoupement de modalités.
+
+
+```{r}
+skim(freMTPLsev)
+```
+La base de données freMTPLsev contient 16181 lignes et deux colonnes. Nous n'avons pas de valeurs manquantes dans la base de données. Le coût moyen des sinistres est de 2129. Par ailleurs, la différence entre la moyenne et le 3e quartile nous montre que la moyenne est très tirée à la hausse par les coûts très élévés dans la base de données. 
+
+## I.2 : Analyse univariée
+
+### I.2.1 : Variables numériques
+
+
+```{r}
+# Age 
+barplot(table(freMTPLfreq$DriverAge), main="Repartition de la population par âge de notre portefeuille", xlab="Age", ylab="Effectif", col="#2ecc71")
+
+```
+Commentaires : 
+La majorité de la population est comprise dans l'intervalle [25 ; 55]. Nous avons très peu d'individus après 83 ans. Nous pouvons pour la modélisation faire des classes d'âges. Ce qui nous permettra d'homogénéiser la population dans des classes d'âges.  
+
+```{r}
+# Exposition
+barplot(table(freMTPLfreq$Exposure), main="Repartition de l'exposition du portefeuille", xlab="Exposition", ylab="valeur", col="#2ecc71")
+```
+Commentaires : Même commentaire que précédemment. 
+
+
+```{r}
+# Age de la voiture
+barplot(table(freMTPLfreq$CarAge), main="Ancienneté du parc automobile assuré", xlab="Age de la voiture", ylab="valeur", col="#2ecc71")
+```
+Commentaires : Même commentaire. Remarquons la concentration de l'âge des véhicules en dessous de 15 ans. 
+
+
+```{r}
+# Densité
+barplot(table(freMTPLfreq$Density), main="Densité sur le portefeuille", xlab="Densité", ylab="valeur", col="#2ecc71")
+```
+Commentaires : Même remarque. 
+
+```{r}
+# Nombre de sinistre
+barplot(table(freMTPLfreq$ClaimNb), main="Nombre de sinistres", xlab="Densité", ylab="valeur", col="#2ecc71")
+```
+Commentaires : Même remarque.
+
+```{r}
+# Montant des sinsitres
+barplot(table(freMTPLsev$ClaimAmount), main="Montant des sinsitres", xlab="Densité", ylab="valeur", col="#2ecc71")
+```
+Commentaires : Nous avons une concentration des montants entre 1063 et 1390. L'hétérogénéité des sinistres peut venir de la différence entre les garanties sinistrées. Généralement, coûts compris entre 1063 et 1390 correspondent aux indemnisations de la garantie "Responsabilité Civile".
+
+```{r}
+ggplot(subset(freMTPLsev, ClaimAmount < 2500), aes(x = ClaimAmount)) +
+  geom_density(fill = "#2ecc71", alpha = 0.5) +
+  labs(title = "Densité du montant des sinistres",
+       x = "Montant des sinistres",
+       y = "Densité") +
+  theme_minimal()
+```
+
+
+### I.2.1 : Variables catégorielles
+
+```{r}
+create_pie_chart <- function(data, variable_name) {
+  # Préparer une expression symbolique du nom de la variable pour l'utiliser dans ggplot
+  var_expr <- sym(variable_name)
+  
+  # Création du graphique
+  pie_chart <- ggplot(data, aes(x = "", fill = factor(!!var_expr))) + 
+    geom_bar(width = 1, stat = "count") +
+    coord_polar(theta = "y") +
+    labs(title = paste("Répartition des", variable_name), x = NULL, y = NULL, fill = variable_name) +
+    theme_void()
+  
+  # Retourner le graphique
+  return(pie_chart)
+}
+```
+
+
+```{r}
+create_pie_chart(freMTPLfreq, "Brand")
+```
+Commentaires : Même commentaire
+
+
+```{r}
+create_pie_chart(freMTPLfreq, "Power")
+
+```
+Commentaires : Même commentaire
+
+
+```{r}
+create_pie_chart(freMTPLfreq, "Gas")
+
+```
+Commentaires : Même commentaire
+
+
+```{r}
+create_pie_chart(freMTPLfreq, "Region")
+```
+Commentaires : Même commentaire
+
+## I.3 : Analyse multivariée
+
+
+```{r}
+# Jointure des données
+dim(freMTPLfreq)
+dim(freMTPLsev)
+
+sum(duplicated(freMTPLsev["PolicyID"]))
+
+length(unique(freMTPLsev$PolicyID))
+length(unique(freMTPLfreq$PolicyID))
+
+```
+```{r}
+mean_claim_by_policy <- freMTPLsev %>%
+  group_by(PolicyID) %>%
+  summarise(mean_ClaimAmount = mean(ClaimAmount, na.rm = TRUE))%>%
+    rename(ClaimAmount = mean_ClaimAmount)
+
+length(unique(freMTPLsev$PolicyID))
+length(unique(mean_claim_by_policy$PolicyID))
+dim(freMTPLsev)
+dim(mean_claim_by_policy)
+```
+
+```{r}
+# Type de la clé 
+freMTPLfreq$PolicyID <- as.character(freMTPLfreq$PolicyID)
+mean_claim_by_policy$PolicyID  <- as.character(mean_claim_by_policy$PolicyID)
+
+# Effectuer une jointure
+base_data <- left_join(freMTPLfreq, mean_claim_by_policy, by = "PolicyID")
+dim(base_data)
+
+# Replace NA values with 0 for numerical calculations
+base_data$ClaimAmount[is.na(base_data$ClaimAmount)] <- 0
+```
+
+
+```{r}
+skim(base_data)
+```
+Commentaires : 
+
+### I.3.1 : Corrélation entre variables numériques
+
+```{r}
+num_vars <- c("Exposure", "CarAge", "DriverAge", "Density", "ClaimAmount", "ClaimNb")  
+cat_vars <- c("Power", "Brand", "Gas", "Region")  
+
+```
+
+
+```{r}
+# Calculer la matrice de corrélation pour les colonnes numériques
+correlation_matrix <- freMTPLfreq %>% 
+  select_if(is.numeric) %>% 
+  cor()
+
+# Afficher la matrice de corrélation
+print(correlation_matrix)
+```
+Commentaires : Les corrélations entre les variables numériques sont très faibles. Ce qui est très bien pour nos modélisations. 
+
+### I.3.2 : Corrélation entre variables catégorielles
+
+```{r}
+cramers_v <- function(chi2, n, r, k) {
+  # chi2 : Statistique Chi-deux
+  # n : Nombre total d'observations
+  # r : Nombre de lignes dans la table de contingence
+  # k : Nombre de colonnes dans la table de contingence
+  v <- sqrt((chi2 / n) / (min(r - 1, k - 1)))
+  return(v)
+}
+
+```
+
+
+```{r}
+chi2_cramers_v_matrix <- function(data, categorical_vars) {
+  library(dplyr)
+  n <- nrow(data)
+  results <- matrix(nrow = length(categorical_vars), ncol = length(categorical_vars), dimnames = list(categorical_vars, categorical_vars))
+  
+  for (i in 1:length(categorical_vars)) {
+    for (j in i:length(categorical_vars)) {
+      if (i == j) {
+        results[i, j] <- 1
+      } else {
+        # Calcul du test du Chi-deux
+        tbl <- table(data[[categorical_vars[i]]], data[[categorical_vars[j]]])
+        chi2_test <- chisq.test(tbl)
+        
+        # Calcul du V de Cramér
+        v <- cramers_v(chi2_test$statistic, n, nrow(tbl), ncol(tbl))
+        results[i, j] <- v
+        results[j, i] <- v  # Matrice symétrique
+      }
+    }
+  }
+  return(as.data.frame(results))
+}
+
+```
+
+
+```{r}
+# Application de la fonction
+results_matrix <- chi2_cramers_v_matrix(base_data, cat_vars)
+print(results_matrix)
+
+```
+Commentaires : Pour la corrélation entre les variables catégorielles, le V de Cramer nous permet d'avoir l'intensité. A l'instar des variables numériques les corrélations entre elles sont très faible. Le coefficient de corrélation le plus élevé est celui entre la puissance et le type de puissance.
+
+### I.3.3 : Corrélation entre variables numériques et catégorielles
+
+```{r}
+perform_kruskal <- function(data, numeric_vars, categorical_vars) {
+  # Charger les bibliothèques nécessaires
+  library(dplyr)
+  
+  # Préparer le dataframe pour les résultats
+  results <- data.frame(
+    Numeric_Variable = character(),
+    Categorical_Variable = character(),
+    Kruskal_Statistic = numeric(),
+    P_Value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Boucle pour chaque combinaison de variable numérique et catégorielle
+  for (num_var in numeric_vars) {
+    for (cat_var in categorical_vars) {
+      # Assurer que la variable catégorielle est de type facteur
+      data[[cat_var]] <- as.factor(data[[cat_var]])
+      
+      # Exécuter le test de Kruskal-Wallis
+      test_result <- kruskal.test(reformulate(cat_var, response = num_var), data = data)
+      
+      # Ajouter le résultat au dataframe de résultats
+      results <- rbind(results, data.frame(
+        Numeric_Variable = num_var,
+        Categorical_Variable = cat_var,
+        Kruskal_Statistic = test_result$statistic,
+        P_Value = test_result$p.value
+      ))
+    }
+  }
+  
+  # Création d'une matrice de corrélation
+  results$Significance <- ifelse(results$P_Value < 0.05, "Significant", "Not Significant")
+  
+  # Créer une matrice visuelle des résultats
+  results_matrix <- results %>%
+    pivot_wider(names_from = Categorical_Variable, values_from = Significance)
+  
+  return(results_matrix)
+}
+
+```
+
+```{r}
+# Appliquer la fonction
+results_matrix <- perform_kruskal(base_data, num_vars, cat_vars)
+print(results_matrix)
+
+```
+Commentaires : Le test de Kruskall Walis permet d'étudier la dépendance entre des variables numériques et catégorielles. Nous remarquons ici qu'il y'a effectivement dépendance entre les variables. 
+
+
+### I.3.4 : Sinistralité par âge
+
+On regarde le nombre de personnes ayant eu au moins un sinistre par âge
+```{r}
+barplot(table(freMTPLfreq[freMTPLfreq$ClaimNb!=0,]$DriverAge),
+        main="Repartition de la population par age en fonction du nombre de sinistres",
+        xlab="Age",
+        ylab="Nb de sinistres",
+        col="#e67e22")
+```
+On regarde le nombre de sinistres par age en prenant en compte le nombre de polices dans cette classe d'âge
+
+```{r}
+prop_sin_age = aggregate(x = freMTPLfreq$ClaimNb,
+                         by = list(freMTPLfreq$DriverAge),
+                         FUN = sum)
+names(prop_sin_age)=c("DriverAge", "ClaimNb")
+nbr_total_par_age = count(freMTPLfreq, "DriverAge")
+
+```
+
+```{r}
+# Selon les libairies le plot peut etre different : Soit faire cette commande 
+# prop_sin_age$proportion = 100*prop_sin_age$ClaimNb/nbr_total_par_age$freq
+# Soit celle la : 
+prop_sin_age$proportion = 100*prop_sin_age$ClaimNb/nbr_total_par_age$n
+
+plot(prop_sin_age$DriverAge,prop_sin_age$proportion,xlab = "Age",ylab = "Proportion",
+     main="Proportion sinistres par nombre de polices par age",col="black")
+
+```
+
+Commentaires : Pour les personnes tres agees peu de polices par age donc peu representatif
+pour les tres jeunes : la population est aussi faible mais quand meme representative
+
+```{r}
+# Zoom sur la bosse des accidents : 
+plot(prop_sin_age[prop_sin_age$DriverAge<=35,]$DriverAge,
+     prop_sin_age[prop_sin_age$DriverAge<=35,]$proportion,xlab = "Age",ylab = "Proportion",
+     main="Zoom sur la bosse des accidents",col="#e74c3c", type="p")
+
+```
+
+On remarque une "bosse" pour les plus jeunes âges. Une proportion élevée qui diminue pour s'applatir autour de 25 ans. 
+
+
+# Partie II : Préparation des données
+
+## II.1 Transformation des variables 
+## II.2 Regroupement de modalités
+```{r}
+skim(base_data)
+```
+# Partie III : Modélisation
+## III.1 Modifications de la base de données
+### III.1.1 Regroupement de modalités
+
+On cherche dans un premier temps à regrouper les variables qualitatives entre elles pour avoir moins de modalités par la suite dans notre régression
+
+Commençons par les régions
+```{r}
+
+## Calculate the required statistics by region
+
+by_region <- by(base_data, base_data$Region, function(x) {
+  sum_claim <- round(sum(x$ClaimNb), 2)
+  mean_exposure <- round(mean(x$Exposure), 2)
+  mean_car_age <- round(mean(x$CarAge), 2)
+  mean_driver_age <- round(mean(x$DriverAge), 2)
+  count_policy_id <- length(x$PolicyID)
+  return(c(count_policy_id, sum_claim, mean_exposure, mean_car_age, mean_driver_age))
+})
+
+# Transform the results into a dataframe
+result_region <- do.call(rbind, by_region)
+result_region <- as.data.frame(result_region)
+#rownames(result_df) <- NULL
+colnames(result_region) <- c("Count_Policy_ID", "Mean_Claim", "Mean_Exposure", "Mean_Car_Age", "Mean_Driver_Age")
+
+# Display the dataframe
+print(result_region)
+
+```
+On recherche ici à constituer des groupes de régions afin de les analyser plus facilement par la suite avec comme critères le nombre de police d'assurance, le montant de réclamation moyen, l'exposition et dans une moindre mesure, l'âge des voitures
+
+- Region_1 : Centre parce que c'est une région avec de grands nombres de polices (160k) et de hauts nombre moyens de réclamations (7k)
+
+- Region_2 : Ile de France, Bretagne & Pays de la Loire qui sont des régions avec des nombres modérés de polices (entre 35k et 70k) et de nombres moyens de réclamations élevés (entre 1.5k et 3k)
+
+- Region_3 : Aquitaine, Nord Pas de Calais & Poitou Charente qui sont régions avec des nombres modérés de polices (entre 15k et 35k) et des nombres moyens de réclamations bas à modérés (entre 0.5k et 1.5k)
+
+- Region_4 : Basse Normandie, Haute Normandie  Limousin qui sont des régions avec de petits nombres de polices(entre 4k et 15k) et des nombres moyens de réclamations bas (entre 0.2k et 0.5k)
+
+Voyons ensuite pour les marques
+```{r}
+
+## Calculate the required statistics by brand
+
+by_brand <- by(base_data, base_data$Brand, function(x) {
+  sum_claim <- round(sum(x$ClaimNb), 2)
+  mean_exposure <- round(mean(x$Exposure), 2)
+  mean_car_age <- round(mean(x$CarAge), 2)
+  mean_driver_age <- round(mean(x$DriverAge), 2)
+  count_policy_id <- length(x$PolicyID)
+  return(c(count_policy_id, sum_claim, mean_exposure, mean_car_age, mean_driver_age))
+})
+
+# Transform the results into a dataframe
+result_brand <- do.call(rbind, by_brand)
+result_brand <- as.data.frame(result_brand)
+#rownames(result_df) <- NULL
+colnames(result_brand) <- c("Count_Policy_ID", "Mean_Claim", "Mean_Exposure", "Mean_Car_Age", "Mean_Driver_Age")
+
+# Display the dataframe
+print(result_brand)
+
+```
+
+- Brand_1 : Renault, Nissan or Citroen parce que c'est la marque avec de grands nombres de polices (22k) et de hauts nombre moyens de réclamations (10k)
+
+- Brand_2 : Japanese (except Nissan) or Korean, Opel, General Motors or Ford & Volkswagen, Audi, Skoda or Seat qui sont des marques avec des nombres modérés de polices (entre 30k et 80k) et de nombres moyens de réclamations élevés (entre 1.5k et 2.5k)
+
+- Brand_3 : Fiat, Mercedes, Chrysler or BMW & other qui sont marques avec des nombres plus faible de polices (entre 9.5k et 20k) et des nombres moyens de réclamations bas (entre 0.4k et 0.9k)
+
+Voyons enfin pour la puissance de la voiture
+```{r}
+
+## Calculate the required statistics by power
+
+by_power <- by(base_data, base_data$Power, function(x) {
+  sum_claim <- round(sum(x$ClaimNb), 2)
+  mean_exposure <- round(mean(x$Exposure), 2)
+  mean_car_age <- round(mean(x$CarAge), 2)
+  mean_driver_age <- round(mean(x$DriverAge), 2)
+  count_policy_id <- length(x$PolicyID)
+  return(c(count_policy_id, sum_claim, mean_exposure, mean_car_age, mean_driver_age))
+})
+
+# Transform the results into a dataframe
+result_power <- do.call(rbind, by_power)
+result_power <- as.data.frame(result_power)
+#rownames(result_df) <- NULL
+colnames(result_power) <- c("Count_Policy_ID", "Mean_Claim", "Mean_Exposure", "Mean_Car_Age", "Mean_Driver_Age")
+
+# Display the dataframe
+print(result_power)
+
+```
+
+- Power_1 : d,e,f & g parce que sont les catégories avec de grands nombres de polices (entre 65k et 100k) et de hauts nombre moyens de réclamations (entre 25k et 45k)
+
+- Power_2 : h,i,j qui sont des marques avec des nombres modérés de polices (entre 15k et 30k) et de nombres moyens de réclamations élevés (entre 0.5k et 1.5k)
+
+- Power_3 : k, l,m, n & o qui sont marques avec des nombres plus faible de polices (entre 1k et 10k) et des nombres moyens de réclamations bas (entre 0k et 0.5k)
+
+
+
+Appliquons les changements
+
+```{r}
+# Les régions
+
+# Remplacement des valeurs dans la colonne Région
+base_data <- base_data %>%
+  mutate(Region = case_when(
+    Region == "Aquitaine" ~ "Region_3",
+    Region == "Basse-Normandie" ~ "Region_4",
+    Region == "Bretagne" ~ "Region_2",
+    Region == "Centre" ~ "Region_1",
+    Region == "Haute-Normandie" ~ "Region_4",
+    Region == "Ile-de-France" ~ "Region_2",
+    Region == "Limousin" ~ "Region_4",
+    Region == "Nord-Pas-de-Calais" ~ "Region_3",
+    Region == "Pays-de-la-Loire" ~ "Region_2", 
+    Region == "Poitou-Charentes" ~ "Region_3", 
+    TRUE ~ Region  # Garde les valeurs qui ne correspondent à aucune condition
+  ))
+
+# Remplacement des valeurs dans la colonne Brand
+base_data <- base_data %>%
+  mutate(Brand = case_when(
+    Brand == "Fiat" ~ "Brand_3",
+    Brand == "Japanese (except Nissan) or Korean" ~ "Brand_2",
+    Brand == "Mercedes, Chrysler or BMW" ~ "Brand_3",
+    Brand == "Opel, General Motors or Ford" ~ "Brand_2",
+    Brand == "Renault, Nissan or Citroen" ~ "Brand_1",
+    Brand == "Volkswagen, Audi, Skoda or Seat" ~ "Brand_2",
+    Brand == "other" ~ "Brand_3",
+    TRUE ~ Brand  # Garde les valeurs qui ne correspondent à aucune condition
+  ))
+
+# Remplacement des valeurs dans la colonne Power
+base_data <- base_data %>%
+  mutate(Power = case_when(
+    Power == "d" ~ "Power_1",
+    Power == "e" ~ "Power_1",
+    Power == "f" ~ "Power_1",
+    Power == "g" ~ "Power_1",
+    Power == "h" ~ "Power_2",
+    Power == "i" ~ "Power_2",
+    Power == "j" ~ "Power_2",
+    Power == "k" ~ "Power_3",
+    Power == "l" ~ "Power_3",
+    Power == "m" ~ "Power_3",
+    Power == "n" ~ "Power_3",
+    Power == "o" ~ "Power_3",
+    TRUE ~ Power  # Garde les valeurs qui ne correspondent à aucune condition
+  ))
+
+```
+
+### III.1.2 Vérification des modifications sur la base de données
+
+```{r}
+cat("\n\nPourcentages des modalités de Power dans la base:\n")
+prop.table(table(base_data$Power)) * 100
+
+cat("\n\nPourcentages des modalités de Brand dans la base:\n")
+prop.table(table(base_data$Brand)) * 100
+
+cat("\n\nPourcentages des modalités de Gas dans la base:\n")
+prop.table(table(base_data$Gas)) * 100
+
+cat("\n\nPourcentages des modalités de Region dans la base:\n")
+prop.table(table(base_data$Region)) * 100
+```
+
+
+
+### III.1.4 Encodage des variables 
+
+```{r}
+# Commencer avec le dataframe original
+base_data_onehot <- base_data
+
+# Créer une variable dummy pour Power
+dummy <- dummyVars(" ~ Power", data = base_data_onehot)
+onehot_data <- predict(dummy, newdata = base_data_onehot)
+onehot_df <- as.data.frame(onehot_data)
+colnames(onehot_df) <- gsub("PowerPower_", "Power_", colnames(onehot_df))
+base_data_onehot <- cbind(base_data_onehot, onehot_df)
+base_data_onehot$Power <- NULL
+
+# Créer une variable dummy pour Region
+dummy <- dummyVars(" ~ Region", data = base_data_onehot)
+onehot_data <- predict(dummy, newdata = base_data_onehot)
+onehot_df <- as.data.frame(onehot_data)
+colnames(onehot_df) <- gsub("RegionRegion_", "Region_", colnames(onehot_df))
+base_data_onehot <- cbind(base_data_onehot, onehot_df)
+base_data_onehot$Region <- NULL
+
+# Créer une variable dummy pour Brand
+dummy <- dummyVars(" ~ Brand", data = base_data_onehot)
+onehot_data <- predict(dummy, newdata = base_data_onehot)
+onehot_df <- as.data.frame(onehot_data)
+colnames(onehot_df) <- gsub("BrandBrand_", "Brand_", colnames(onehot_df))
+base_data_onehot <- cbind(base_data_onehot, onehot_df)
+base_data_onehot$Brand <- NULL
+
+# Vérifier les premières lignes du dataframe mis à jour
+head(base_data_onehot)
+```
+
+```{r}
+# Vérifier les premières lignes du dataframe mis à jour
+head(base_data)
+```
+
+
+
+## III.2 Modélisation
+### III.2.1 Split de la base de données
+
+Nous procédons à un split stratifié pour avoir les mêmes proportions des modalités de la variable cible dans les jeu de données d'entrainement et de test. 
+
+```{r}
+#Fixer l'aléa et partitionner les données pour le nombre de sinistres en 75%/25%
+set.seed(123)
+
+# Créer un index pour le split stratifié
+indexes <- createDataPartition(base_data_onehot[["ClaimNb"]], p=0.75, list=FALSE)
+
+# Créer les ensembles d'entraînement et de test
+train <- base_data_onehot[indexes,]
+test <- base_data_onehot[-indexes,]
+
+```
+
+```{r}
+# Calculer les fréquences des modalités de ClaimNb dans train
+train_table <- table(train$ClaimNb)
+train_percent <- prop.table(train_table) * 100
+cat("Répartition des modalités dans la table d'entraînement:\n")
+train_percent
+
+# Calculer les fréquences des modalités de ClaimNb dans test
+test_table <- table(test$ClaimNb)
+test_percent <- prop.table(test_table) * 100
+cat("\n\nRépartition des modalités dans la table de test:\n")
+test_percent
+```
+Nous voyons que nous avons des répartitions semblables entre la base test et la base des sinistres. Nous gardons ce split qui nous paraît cohérent.
+
+### III.2.2 Modélisation du nombre de sinistre
+
+Passons à la modélisation.
+
+Pour éviter de réécrire toujours les mêmes variables, on les met dans une variable distincte. De plus, en raison de la multicolinéarité entre vos variables dummy quand on convertit des variables catégorielles en dummies, une des catégories de chaque variable doit être omise pour éviter la colinéarité parfaite (dummy variable trap)
+
+Nous avons décidé de retirer Power_3, Brand_3 ainsi que Region_4 qui sont les variables qui ont un nombre faible de police et un nombre de réclamation assez bas, ceci ne devrait donc pas affecter la significativité de notre modèle
+
+```{r}
+formula_model <- ClaimNb ~ -1 + Exposure + CarAge + Gas + Density + DriverAge +
+                  Power_1 + Power_2 + 
+                  Brand_1 + Brand_2 +  
+                  Region_1 + Region_2 + Region_3
+```
+
+L'intercept (ie constante) dans un modèle GLM représente la valeur attendue de la variable dépendante lorsque toutes les variables indépendantes sont égales à zéro. Dans notre cas, on souhaite comparer les effets de différents groupes de variables, on élimine donc la constante avec le -1.
+
+
+========== Modele de Gamma ========== 
+
+Nous ne définissions pas un modèle Gamma pour le nombre de sinistres car le nombre de sinistre peut être égal à 0, or gamma est défini pour x>0
+
+========== Modele Gaussien ========== 
+
+Nous ne faisons pas le modèle Gaussien non plus car il ne nous semble pas pertinent dans le cadre d'un comptage de nombre de sinistres, une distribution gaussienne étant davantage adaptée lorsque que les variables sont continues et symétrique autour de la moyenne. Or, dans les données de la fréquence de sinistres, nous n'avons pas cette symétrie en plus d'une forte variance.
+
+========== Modele Poisson ========== 
+
+La famille de Poisson est utilisée pour modéliser des variables aléatoires discrètes qui prennent des valeurs entières positives. Elle est souvent utilisée pour modéliser des comptages d'évènements rares, tels que le nombre de sinistres.
+
+========== Modele zero inflation de zero ============
+
+```{r}
+# Modele initial de la Poisson
+glm_poisson_nb <- glm(formula_model,family = poisson(link="log"), data = train)
+summary(glm_poisson_nb)
+```
+A partir de ces informations, on voit que la région ainsi que la puissance ne sont pas très significatives on les retire. Concernant Brand_1, nous nous disons qu'il n'est pas pertinent de garder Brand_2 qui est significatif et retirer Brand_1 qui est important pour nos données.
+
+```{r}
+#Modele poisson une fois les variables non significatives retirees
+glm_poisson_nb <- glm(
+  ClaimNb ~ -1 + Exposure + CarAge + Gas + DriverAge + Density + Brand_1 + Brand_2,
+  family = poisson(link = "log"),data = train)
+summary(glm_poisson_nb)
+```
+========== Modele Poisson surdisperse  ========== 
+
+La famille de Poisson surdisperse est une extension de la famille de Poisson qui permet de prendre en compte la surdispersion des données. La surdispersion se produit lorsque la variance des données est supérieure à la moyenne, ce qui peut rendre le modèle de Poisson inadapté.
+
+```{r}
+# Modele initial Poisson surdispersée 
+glm_quasipoisson_nb <- glm(formula_model,family = quasipoisson(link="log"), data = train)
+summary(glm_quasipoisson_nb)
+```
+Comme précédemment, nous gardons l'ensemble des variables quantititatives et nous retirons les variables quantitatives hors celles de la marque (1 & 2)
+
+```{r}
+#Modele de poisson surdisperse apres avoir retire les variables non significatives
+glm_quasipoisson_nb <- glm(
+  ClaimNb ~ -1 + Exposure + CarAge + Gas + DriverAge + 
+    Density + Brand_1 + Brand_2, family = quasipoisson(link = "log"),
+  data = train)
+summary(glm_quasipoisson_nb)
+```
+========== Modele négatif binomial  ========== 
+
+La famille de négatif binomial est une autre extension de la famille de Poisson qui permet de prendre en compte la surdispersion des données. Elle est souvent utilisée pour modéliser des comptages d'événements qui présentent une forte variabilité. 
+
+```{r}
+# Modèle initial de la Binomiale négative
+glm_bin_neg_nb <- glm.nb(formula_model, data = train)
+summary(glm_bin_neg_nb)
+```
+Nous avons la même analyse que précédemment
+
+```{r}
+# Modèle de la Binomiale négative après avoir retiré les variables non significatives
+glm_bin_neg_nb <- glm.nb(
+  ClaimNb ~ -1 + Exposure + CarAge + Gas + DriverAge + 
+    Density +Brand_1 + Brand_2 + Brand_3,data = train)
+summary(glm_bin_neg_nb)
+```
+
+```{r}
+zip_poisson <- zeroinfl(formula_model, data = train, na.action= na.omit, dist="poisson")
+summary(zip_poisson)
+```
+
+```{r}
+zip_negbin <- zeroinfl(formula_model, data = train, na.action= na.omit, dist="negbin")
+summary(zip_negbin)
+```
+
+```{r}
+zip <- zeroinfl(formula_model, data = train, na.action= na.omit)
+summary(zip)
+```
+
+
+========== Choix du meilleur modèle selon AIC ==========
+
+Déterminons maintenant le meilleur modèle au sens du critère AIC pour le nombre de sinistres
+
+```{r}
+# Extraire les AIC des modèles, on retire le modele poisson surdisperse car etant un quasi modele, il n'a pas de vraisemblance, cependant par simplicité nous décidons de ne pas évaluer le quasi AIC
+
+# Créer un data frame avec les noms de modèle et leur AIC associé
+AIC_data <- data.frame(Modele = c("Modele Poisson", "Modele Binomial Negatif", "Modele zero inflation de zero Poisson", "Modele zero inflation Binomial Negatif"),
+                       AIC = c(AIC(glm_poisson_nb), AIC(glm_bin_neg_nb), AIC(zip_poisson), AIC(zip_negbin)))
+
+# Afficher le nom du modèle qui minimise l'AIC avec sa valeur
+cat("Le modèle pour le nombre de sinistre qui minimise l'AIC est le ", AIC_data$Modele[which.min(AIC_data$AIC)], "avec une valeur d'AIC de", min(AIC_data$AIC))
+
+```
+
+On retient ainsi le modele binomial négatif selon ce critère.
+
+========== Choix du meilleur modèle selon RMSE ==========
+
+Maintenant, essayons de trouver le meilleur modèle en nous appuyant sur les données de validation.
+Pour cela, nous allons utilier le Root Mean Square Error évaluer la précision d'un modèle de régression (racine carrée de la moyenne des carrés des écarts entre les valeurs prédites par le modèle et les valeurs observées dans l'ensemble de données de test)
+
+
+```{r}
+x_test_nb = subset(test, select=-c(PolicyID, ClaimNb, ClaimAmount))
+y_test_nb = test$ClaimNb
+
+RMSE <- function(observed_data, predicted_data){
+  return(sqrt(mean((observed_data - predicted_data)^2)))
+}
+
+y_poisson_nb = predict(glm_poisson_nb, newdata = x_test_nb, type = "response")
+y_quasipoisson_nb = predict(glm_quasipoisson_nb, newdata = x_test_nb, type = "response")
+y_bin_neg_nb = predict(glm_bin_neg_nb, newdata = x_test_nb, type = "response")
+y_zip_poisson = predict(zip_poisson, newdata = x_test_nb, type = "response")
+y_zip_negbin  = predict(zip_negbin, newdata = x_test_nb, type = "response")
+
+# Créer un data frame avec les noms de modèle et leur AIC associé
+RMSE_data <- data.frame(Modele = c("Modele Poisson", "Modele Quasi Poisson", "Modele Binomial Negatif",
+                                   "Modele zero inflation de zero Poisson", "Modele zero inflation de zero Binomial Negatif"), 
+                        RMSE = c(RMSE(y_test_nb, y_poisson_nb),
+                                 RMSE(y_test_nb, y_quasipoisson_nb),
+                                 RMSE(y_test_nb, y_bin_neg_nb),
+                                 RMSE(y_test_nb, y_zip_poisson),
+                                 RMSE(y_test_nb, y_zip_negbin)
+                                 ))
+
+# Afficher le nom du modèle qui minimise le RMSE avec sa valeur
+cat("Le modèle qui minimise le RMSE est le ", RMSE_data$Modele[which.min(RMSE_data$RMSE)], "avec une valeur de RMSE de", min(RMSE_data$RMSE))
+
+```
+Donc avec le critère du RMSE, on garde le modèle de Poisson. On note également que les précisions entre le modèle de Poisson et quasi Poisson sont similaires (même RMSE). Cela signifie que les données ne présentent pas de surdispersion significative. Dans ce cas, la loi de quasi-Poisson se réduit à la loi de Poisson et les deux distributions sont équivalentes.
+
+### III.2.3 Modélisation du coût de sinistre
+
+Passons à la modélisation.
+
+```{r}
+formula_model <- ClaimAmount ~ -1 + Exposure + CarAge + Gas + Density + DriverAge +
+                  Power_1 + Power_2 + 
+                  Brand_1 + Brand_2 +  
+                  Region_1 + Region_2 + Region_3 
+
+#On filtre la base pour ne garder que les montants positifs car notre etude se concentre desormais sur les valeurs positives
+train_cout <- train[train$ClaimAmount > 0, ]
+test_cout <- test[test$ClaimAmount > 0, ]
+```
+
+========== Modele de Gamma ========== 
+
+```{r}
+#Modèle Initial pour gamma
+#On modifie la database pour utiliser la loi gamma car il faur des montant de sinistres >0 pour utiliser la loi Gamma
+glm_gamma_cout <- glm(formula_model,family = Gamma(link="log"), data = train_cout)
+summary(glm_gamma_cout)
+```
+
+```{r}
+#Modèle après avoir retiré les variables non significatives pour gamma
+glm_gamma_cout <- glm(ClaimNb ~ -1 + Gas,family = Gamma(link="log"), data = train_cout)
+summary(glm_gamma_cout)
+```
+Nous avons un AIC négatif et peu de variables réellement significatives, nous rejetons ce modèle.
+
+========== Modele Gaussien ========== 
+
+```{r}
+#Modèle initial gaussien
+glm_gaussien_cout <- glm(formula_model,family = gaussian(link="identity"), data = train_cout)
+summary(glm_gaussien_cout)
+```
+on garde l'age du conducteur ainsi que le type d'essence mais vu le peu de significativité des variables, ce modèle ne semble pas intéressant
+```{r}
+#Modèle en retenant quelques variables significatives
+glm_gaussien_cout <- glm(ClaimNb ~ -1 +Gas,family = gaussian(link="identity"), data = train_cout)
+summary(glm_gaussien_cout)
+```
+Nous observons un AIC négatif en plus de notre observation initiales que les vairables étaient peu significatives, nous ne retenons pas ce modèle par la suite.
+
+========== Modele Poisson & Quasi Poisson ========== 
+
+La famille de Poisson et quasi poisson sont ici inutiles dans le cadre de l'estimation du montant de sinistres.
+
+========== Modele négatif binomial  ========== 
+
+La famille de négatif binomial est une autre extension de la famille de Poisson qui permet de prendre en compte la surdispersion des données. Elle est souvent utilisée pour modéliser des comptages d'événements qui présentent une forte variabilité. 
+
+```{r}
+# Modèle initial de la Binomiale négative
+glm_bin_neg_cout <- glm.nb(formula_model, data = train_cout)
+summary(glm_bin_neg_cout)
+```
+En analysant les variables significatives on garde : 
+
+```{r}
+# Modèle de la Binomiale négative après avoir retiré les variables non significatives
+glm_bin_neg_cout <- glm.nb(
+  ClaimAmount ~ -1 + Exposure + CarAge + Gas + Density + DriverAge +
+                  Power_1 +  
+                  Brand_1 + Brand_2 +  
+                  Region_1,data = train_cout)
+summary(glm_bin_neg_cout)
+```
+========== Choix du meilleur modèle selon AIC ==========
+
+Déterminons maintenant le meilleur modèle au sens du critère AIC.
+
+Les modèles gaussiens et gamma ayant peu de variables significatives comparées à la loi binomiales négatives, nous retenons seulement la binomiale négative
+
+========== Choix du meilleur modèle selon RMSE ==========
+
+Maintenant, essayons de trouver le meilleur modèle en nous appuyant sur les données de validation.
+
+```{r}
+x_test_cout = subset(test_cout, select=-c(PolicyID, ClaimNb, ClaimAmount))
+y_test_cout = test_cout$ClaimAmount
+
+RMSE <- function(observed_data, predicted_data){
+  return(sqrt(mean((observed_data - predicted_data)^2)))
+}
+y_gamma_cout = predict(glm_gamma_cout, newdata = x_test_cout, type = "response")
+y_gaussien_cout = predict(glm_gaussien_cout, newdata = x_test_cout, type = "response")
+y_bin_neg_cout = predict(glm_bin_neg_cout, newdata = x_test_cout, type = "response")
+
+# Créer un data frame avec les noms de modèle et leur AIC associé
+RMSE_data_cout <- data.frame(Modele = c("Modele Gaussien", "Modele Gamma", "Modele Binomial Negatif"), 
+                          RMSE = c(RMSE(y_test_cout, y_gaussien_cout),
+                                  RMSE(y_test_cout, y_gamma_cout),
+                                  RMSE(y_test_cout, y_bin_neg_cout)))
+
+# Afficher le nom du modèle qui minimise le RMSE avec sa valeur
+cat("Le modèle qui minimise le RMSE est le ", RMSE_data_cout$Modele[which.min(RMSE_data_cout$RMSE)], "avec une valeur de RMSE de", min(RMSE_data_cout$RMSE))
+
+```
+
+Comme vu précédemment, nous allons retenir seulement la binomiale négative
+
+
+### IV.1.1 Tarification 
+
+Nous allons nous appuyer sur un modèle de type Fréquence x Cout comme nous l'avons vu en cours d'assurancde Non vie
+
+
+```{r}
+
+mt_sinistres = sum(base_data_onehot$ClaimAmount)
+
+##Modele avec critere AIC
+freq_aic<- predict(zip_negbin, newdata = base_data_onehot, type = "response")
+cout_aic <- predict(glm_bin_neg_cout, newdata = base_data_onehot, type = "response")
+resultat_aic <- sum(freq_aic*cout_aic)
+ecart_aic <- resultat_aic - mt_sinistres
+
+##Modele avec critere RMSE
+freq_RMSE <- predict(zip_poisson, newdata = base_data_onehot, type = "response")
+cout_RMSE <- predict(glm_bin_neg_cout, newdata = base_data_onehot, type = "response")
+resultat_RMSE <-sum(freq_RMSE*cout_RMSE)
+ecart_RMSE <- resultat_RMSE - mt_sinistres
+
+# Créer un data frame avec les noms de modèle et leur prix associé
+tarif_data <- data.frame(Modele = c( "Critère AIC", "Critère RMSE"), 
+                        ecart = c(ecart_aic,ecart_RMSE),
+                        tarif= c(resultat_aic,resultat_RMSE))
+
+# Afficher le nom du modèle qui minimise le RMSE avec sa valeur
+cat("Le tarif choisi est celui qui minimise l'écart avec les données observées", tarif_data$Modele[which.min(tarif_data$ecart)], "avec un écart de", paste0(round(tarif_data$ecart[which.min(tarif_data$ecart)]/mt_sinistres*100, 2), " %"), "et un tarif de", format(tarif_data$tarif[which.min(tarif_data$ecart)], big.mark = " ", scientific = FALSE))
+
+```
+
+# V. Régression Lasso
+```{r}
+# Suppression des NA
+base_data_lasso <- na.omit(base_data_onehot)
+
+# Séparation des données en échantillons d'apprentissage et de test
+set.seed(123)
+indexes <- sample(1:nrow(base_data_lasso), size = 0.75 * nrow(base_data_lasso))
+ltrain <- base_data_lasso[indexes, ]
+ltest <- base_data_lasso[-indexes, ]
+
+#Fonction de calcul du rmse
+RMSE <- function(observed_data, predicted_data){
+  return(sqrt(mean((observed_data - predicted_data)^2)))
+}
+```
+
+## V.1. Nombre de sinistres
+
+```{r}
+# Encodage des variables catégorielles en variables binaires pour l'échantillon d'apprentissage
+formula_model_freq <- ClaimNb ~ -1 + Exposure + CarAge + Gas + Density + DriverAge +
+                      Power_1 + Power_2 + 
+                      Brand_1 + Brand_2 +  
+                      Region_1 + Region_2 + Region_3 
+
+train_matrix_freq <- model.matrix(formula_model_freq, data = ltrain)
+X_train_freq <- as.matrix(train_matrix_freq)
+y_train_freq <- ltrain$ClaimNb
+
+# Encodage des variables catégorielles en variables binaires pour l'échantillon de test
+test_matrix_freq <- model.matrix(formula_model_freq, data = ltest)
+X_test_freq <- as.matrix(test_matrix_freq)
+y_test_freq <- ltest$ClaimNb
+
+# Vérifier les dimensions des matrices et vecteurs
+cat("Dimensions de X_train_freq:", dim(X_train_freq), "\n")
+cat("Dimensions de y_train_freq:", length(y_train_freq), "\n")
+cat("Dimensions de X_test_freq:", dim(X_test_freq), "\n")
+cat("Dimensions de y_test_freq:", length(y_test_freq), "\n")
+
+```
+Gaussien
+```{r}
+# Ajustement du modèle Lasso avec la famille Gaussian
+set.seed(123)
+lasso_gaussian_freq <- cv.glmnet(X_train_freq, y_train_freq, alpha = 1, family = "gaussian")
+
+# Prédictions et calcul du RMSE sur l'échantillon de test
+pred_gaussian_freq <- predict(lasso_gaussian_freq, s = "lambda.min", newx = X_test_freq, type = "response")
+rmse_gaussian_freq <- RMSE(y_test_freq,pred_gaussian_freq)
+print(paste("RMSE pour la famille Gaussian :", rmse_gaussian_freq))
+```
+
+Poisson
+```{r}
+# Ajustement du modèle Lasso (Poisson)
+set.seed(123)
+lasso_poisson_freq <- cv.glmnet(X_train_freq, y_train_freq, alpha = 1, family = "poisson")
+
+# Prédictions et calcul du RMSE sur l'échantillon de test
+pred_poisson_freq <- predict(lasso_poisson_freq, s = "lambda.min", newx = X_test_freq, type = "response")
+rmse_poisson_freq <- RMSE(y_test_freq, pred_poisson_freq)
+print(paste("RMSE pour la famille Poisson :", rmse_poisson_freq))
+```
+
+Conclusion quant à la pertinence du modèle
+Comparons les RMSE pour déterminer la meilleure famille de distribution.
+```{r}
+# Comparaison des RMSE
+rmse_values_freq <- c(Gaussian = rmse_gaussian_freq, Poisson = rmse_poisson_freq)
+best_family_freq <- names(which.min(rmse_values_freq))
+
+print(paste("La famille de distribution qui minimise le RMSE est :", best_family_freq))
+print(paste("Le RMSE pour cette famille est :", min(rmse_values_freq)))
+```
+
+
+## V.2. Couts des sinistres
+```{r}
+#Modéle et splitage des données. On ne se concentre que sur les valeurs positives
+formula_model <- ClaimAmount ~ -1 + Exposure + CarAge + Gas + Density + DriverAge +
+                      Power_1 + Power_2 + 
+                      Brand_1 + Brand_2 +  
+                      Region_1 + Region_2 + Region_3 
+
+ltrain_cout <- ltrain[ltrain$ClaimAmount > 0, ]
+ltest_cout <- ltest[ltest$ClaimAmount > 0, ]
+
+# Encodage des variables catégorielles en variables binaires pour l'échantillon d'apprentissage
+train_matrix_cout <- model.matrix(formula_model, data = ltrain_cout)
+X_train_cout <- as.matrix(train_matrix_cout)
+y_train_cout <- ltrain_cout$ClaimAmount
+
+# Encodage des variables catégorielles en variables binaires pour l'échantillon de test
+test_matrix_cout <- model.matrix(formula_model, data = ltest_cout)
+X_test_cout <- as.matrix(test_matrix_cout)
+y_test_cout <- ltest_cout$ClaimAmount
+
+# Vérifier les dimensions des matrices et vecteurs
+cat("Dimensions de X_train_cout:", dim(X_train_cout), "\n")
+cat("Dimensions de y_train_cout:", length(y_train_cout), "\n")
+cat("Dimensions de X_test_cout:", dim(X_test_cout), "\n")
+cat("Dimensions de y_test_cout:", length(y_test_cout), "\n")
+
+```
+
+Gaussien
+```{r}
+# Ajustement du modèle Lasso avec la famille Gaussian
+set.seed(123)
+lasso_gaussian_cout <- cv.glmnet(X_train_cout, y_train_cout, alpha = 1, family = "gaussian")
+
+# Prédictions et calcul du RMSE sur l'échantillon de test
+pred_gaussian_cout <- predict(lasso_gaussian_cout, s = "lambda.min", newx = X_test_cout)
+rmse_gaussian_cout <- sqrt(mean((y_test_cout - pred_gaussian_cout)^2))
+print(paste("RMSE pour la famille Gaussian :", rmse_gaussian_cout))
+```
+
+Poisson
+```{r}
+# Ajustement du modèle Lasso (Poisson)
+set.seed(123)
+lasso_poisson_cout <- cv.glmnet(X_train_cout, y_train_cout, alpha = 1, family = "poisson")
+
+# Prédictions et calcul du RMSE sur l'échantillon de test
+pred_poisson_cout <- predict(lasso_poisson_cout, s = "lambda.min", newx = X_test_cout)
+rmse_poisson_cout <- sqrt(mean((y_test_cout - pred_poisson_cout)^2))
+print(paste("RMSE pour la famille Poisson :", rmse_poisson_cout))
+```
+
+Conclusion quant à la pertinence du modèle
+Comparons les RMSE pour déterminer la meilleure famille de distribution.
+```{r}
+# Comparaison des RMSE
+rmse_values_cout <- c(Gaussian = rmse_gaussian_cout, Poisson = rmse_poisson_cout)
+best_family_cout <- names(which.min(rmse_values_cout))
+
+print(paste("La famille de distribution qui minimise le RMSE est :", best_family_cout))
+print(paste("Le RMSE pour cette famille est :", min(rmse_values_cout)))
+```
+
+
